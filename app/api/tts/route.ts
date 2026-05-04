@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import { extname, isAbsolute, join } from "node:path";
+
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -62,12 +65,20 @@ const DEFAULT_TTS_PROVIDER = "mimo";
 const CUSTOM_TTS_PROVIDER = "custom";
 const DEFAULT_TTS_API_TEMPLATE = "https://freetts.org/api/tts";
 const MIMO_TTS_MODEL = "mimo-v2.5-tts";
+const MIMO_VOICE_CLONE_TTS_MODEL = "mimo-v2.5-tts-voiceclone";
 const MIMO_CHAT_COMPLETIONS_URL =
   process.env.MIMO_CHAT_COMPLETIONS_URL?.trim() || "https://api.xiaomimimo.com/v1/chat/completions";
-const MIMO_DEFAULT_VOICE = "mimo_default";
+const MIMO_DEFAULT_CLONE_VOICE = "mimo_voice_clone_default";
+const MIMO_BUILTIN_DEFAULT_VOICE = "mimo_builtin_default";
+const MIMO_BUILTIN_DEFAULT_VOICE_ID = "mimo_default";
+const MIMO_DEFAULT_VOICE = MIMO_DEFAULT_CLONE_VOICE;
+const MIMO_LEGACY_DEFAULT_VOICES = new Set(["default_zh", "default_en", MIMO_BUILTIN_DEFAULT_VOICE_ID]);
 const MIMO_DEFAULT_STYLE = "自然、清晰、适合短视频解说";
 const MIMO_DEFAULT_FORMAT = "mp3";
 const MIMO_SUPPORTED_FORMATS = new Set(["mp3", "wav"]);
+const MIMO_DEFAULT_VOICE_CLONE_REFERENCE_PATH =
+  process.env.MIMO_VOICE_CLONE_REFERENCE_PATH?.trim() || ".voice-clone/default-reference.mp3";
+const MIMO_VOICE_CLONE_MAX_BASE64_BYTES = 10 * 1024 * 1024;
 const FREETTS_ORIGIN = "https://freetts.org";
 const FREETTS_TTS_PATH = "/api/tts";
 const FREETTS_AUDIO_PATH = "/api/audio/";
@@ -103,6 +114,7 @@ type RateLimitBucket = {
 };
 
 const ttsRateLimitBuckets = new Map<string, RateLimitBucket>();
+let defaultVoiceCloneDataUriPromise: Promise<string> | null = null;
 
 export async function GET(request: NextRequest) {
   const text = request.nextUrl.searchParams.get("text");
@@ -180,10 +192,11 @@ async function fetchMimoTtsAudio(text: string, options: TtsRequestOptions) {
   }
 
   const format = normalizeAudioFormat(options.format);
-  const payload = {
+  const voiceConfig = await resolveMimoVoiceConfig(options.voice);
+  const payload: Record<string, unknown> = {
     audio: {
       format,
-      voice: cleanTtsOption(options.voice, MAX_TTS_VOICE_LENGTH) || MIMO_DEFAULT_VOICE,
+      voice: voiceConfig.voice,
     },
     messages: [
       {
@@ -195,10 +208,13 @@ async function fetchMimoTtsAudio(text: string, options: TtsRequestOptions) {
         role: "assistant",
       },
     ],
-    model: MIMO_TTS_MODEL,
-    modalities: ["text", "audio"],
+    model: voiceConfig.model,
     stream: false,
   };
+
+  if (voiceConfig.model === MIMO_TTS_MODEL) {
+    payload.modalities = ["text", "audio"];
+  }
 
   const response = await fetchWithRetry(MIMO_CHAT_COMPLETIONS_URL, {
     body: JSON.stringify(payload),
@@ -206,10 +222,9 @@ async function fetchMimoTtsAudio(text: string, options: TtsRequestOptions) {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
+      "api-key": apiKey,
     },
     method: "POST",
-  }, {
-    publicOnly: shouldValidatePublicTtsUpstreams(),
   });
 
   const responseContentType = response.headers.get("content-type") || "";
@@ -234,8 +249,6 @@ async function fetchMimoTtsAudio(text: string, options: TtsRequestOptions) {
   if (audioUrl) {
     const audioResponse = await fetchWithRetry(new URL(audioUrl, MIMO_CHAT_COMPLETIONS_URL).toString(), {
       cache: "no-store",
-    }, {
-      publicOnly: shouldValidatePublicTtsUpstreams(),
     });
 
     if (!audioResponse.ok) {
@@ -420,6 +433,77 @@ function getMimoApiKey() {
 function normalizeAudioFormat(format: string | undefined) {
   const normalizedFormat = format?.trim().toLowerCase();
   return normalizedFormat && MIMO_SUPPORTED_FORMATS.has(normalizedFormat) ? normalizedFormat : MIMO_DEFAULT_FORMAT;
+}
+
+function normalizeMimoVoice(voice: string | undefined) {
+  const normalizedVoice = cleanTtsOption(voice, MAX_TTS_VOICE_LENGTH);
+  if (!normalizedVoice || MIMO_LEGACY_DEFAULT_VOICES.has(normalizedVoice)) return MIMO_DEFAULT_VOICE;
+  if (normalizedVoice === MIMO_BUILTIN_DEFAULT_VOICE) return MIMO_BUILTIN_DEFAULT_VOICE_ID;
+  return normalizedVoice;
+}
+
+async function resolveMimoVoiceConfig(voice: string | undefined) {
+  const normalizedVoice = normalizeMimoVoice(voice);
+
+  if (normalizedVoice === MIMO_DEFAULT_CLONE_VOICE) {
+    return {
+      model: MIMO_VOICE_CLONE_TTS_MODEL,
+      voice: await getDefaultVoiceCloneDataUri(),
+    };
+  }
+
+  return {
+    model: MIMO_TTS_MODEL,
+    voice: normalizedVoice,
+  };
+}
+
+function getDefaultVoiceCloneDataUri() {
+  if (!defaultVoiceCloneDataUriPromise) {
+    defaultVoiceCloneDataUriPromise = readDefaultVoiceCloneDataUri().catch((error: unknown) => {
+      defaultVoiceCloneDataUriPromise = null;
+      throw error;
+    });
+  }
+
+  return defaultVoiceCloneDataUriPromise;
+}
+
+async function readDefaultVoiceCloneDataUri() {
+  const referencePath = resolveVoiceCloneReferencePath();
+  const mimeType = getVoiceCloneMimeType(referencePath);
+
+  let audioBuffer: Buffer;
+  try {
+    audioBuffer = await readFile(referencePath);
+  } catch {
+    throw new ProductImportError(
+      `默认克隆声线参考音频不存在：${referencePath}。请放入授权的 mp3/wav 样本，或设置 MIMO_VOICE_CLONE_REFERENCE_PATH。`,
+      500,
+    );
+  }
+
+  const base64Audio = audioBuffer.toString("base64");
+  if (Buffer.byteLength(base64Audio, "utf8") > MIMO_VOICE_CLONE_MAX_BASE64_BYTES) {
+    throw new ProductImportError("默认克隆声线参考音频过大，Base64 后不能超过 10 MB。", 413);
+  }
+
+  return `data:${mimeType};base64,${base64Audio}`;
+}
+
+function resolveVoiceCloneReferencePath() {
+  return isAbsolute(MIMO_DEFAULT_VOICE_CLONE_REFERENCE_PATH)
+    ? MIMO_DEFAULT_VOICE_CLONE_REFERENCE_PATH
+    : join(/* turbopackIgnore: true */ process.cwd(), MIMO_DEFAULT_VOICE_CLONE_REFERENCE_PATH);
+}
+
+function getVoiceCloneMimeType(filePath: string) {
+  const extension = extname(filePath).toLowerCase();
+
+  if (extension === ".mp3" || extension === ".mpeg") return "audio/mpeg";
+  if (extension === ".wav") return "audio/wav";
+
+  throw new ProductImportError("默认克隆声线参考音频只支持 mp3 或 wav。", 500);
 }
 
 function getAudioContentType(format: string) {
@@ -619,10 +703,6 @@ function cleanupRateLimitBuckets(now: number) {
 
 function cleanTtsOption(value: string | undefined, maxLength: number) {
   return value?.replace(/\s+/g, " ").trim().slice(0, maxLength) || "";
-}
-
-function shouldValidatePublicTtsUpstreams() {
-  return !ALLOW_PRIVATE_TTS_UPSTREAMS;
 }
 
 function readPositiveIntegerEnv(name: string, fallback: number) {

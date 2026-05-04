@@ -11,6 +11,10 @@ dist/
 .env.local
 .env*.local
 
+# Voice clone samples
+.voice-clone/*
+!.voice-clone/default-reference.mp3
+
 # Tooling output
 .playwright-cli/
 output/

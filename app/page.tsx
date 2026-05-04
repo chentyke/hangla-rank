@@ -17,6 +17,8 @@ import {
   PanelLeftOpen,
   PanelRightOpen,
   Palette,
+  Pencil,
+  Play,
   Plus,
   RotateCcw,
   Search,
@@ -176,8 +178,10 @@ const DEFAULT_TTS_PROVIDER: TtsProvider = "mimo";
 const CUSTOM_TTS_PROVIDER: TtsProvider = "custom";
 const DEFAULT_TTS_API_TEMPLATE = "https://freetts.org/api/tts";
 const LEGACY_DEFAULT_TTS_API_TEMPLATE = "https://api.milorapart.top/apis/mbAIsc?text={text}";
-const DEFAULT_MIMO_VOICE = "mimo_default";
+const DEFAULT_MIMO_VOICE = "mimo_voice_clone_default";
+const MIMO_BUILTIN_DEFAULT_VOICE = "mimo_builtin_default";
 const DEFAULT_MIMO_STYLE = "自然、清晰、适合短视频解说";
+const MIMO_VOICE_PREVIEW_TEXT = "这是一段 Hangla 声线试听。";
 const TTS_CONCURRENCY = 3;
 const TTS_MAX_RETRIES = 2;
 const TTS_RETRY_BASE_DELAY_MS = 1200;
@@ -247,9 +251,8 @@ const ttsProviderOptions = [
 ] as const;
 
 const mimoVoiceOptions = [
-  { id: "mimo_default", label: "默认声线" },
-  { id: "default_zh", label: "中文默认" },
-  { id: "default_en", label: "英文默认" },
+  { id: "mimo_voice_clone_default", label: "默认克隆声线" },
+  { id: MIMO_BUILTIN_DEFAULT_VOICE, label: "MiMo 内置默认声线" },
   { id: "Mia", label: "Mia" },
   { id: "Chloe", label: "Chloe" },
   { id: "Milo", label: "Milo" },
@@ -257,6 +260,7 @@ const mimoVoiceOptions = [
 ] as const;
 
 type MimoVoiceId = (typeof mimoVoiceOptions)[number]["id"];
+const legacyMimoVoiceIds = new Set(["default_zh", "default_en", "mimo_default"]);
 
 const emptyVoiceText: PhaseVoiceText = {
   focus: "",
@@ -377,6 +381,12 @@ function isMimoVoiceId(value: string): value is MimoVoiceId {
   return mimoVoiceOptions.some((option) => option.id === value);
 }
 
+function normalizeMimoVoiceId(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || legacyMimoVoiceIds.has(trimmed)) return DEFAULT_MIMO_VOICE;
+  return isMimoVoiceId(trimmed) ? trimmed : DEFAULT_MIMO_VOICE;
+}
+
 function isRetryableTtsError(error: unknown) {
   if (!(error instanceof Error)) return false;
 
@@ -491,7 +501,6 @@ function readWorkspaceState(value: unknown): WorkspaceState {
   const importedSelectedRowId = readString(rawState.selectedRowId).trim();
   const importedPresetId = readString(rawState.tableRatioPreset, "default");
   const importedTtsProvider = readString(rawState.ttsProvider, DEFAULT_TTS_PROVIDER);
-  const importedMimoVoice = readString(rawState.mimoVoice, DEFAULT_MIMO_VOICE);
   const defaultPauseMs = Math.max(0, readFiniteNumber(rawState.defaultPauseMs, 900));
 
   return {
@@ -508,7 +517,7 @@ function readWorkspaceState(value: unknown): WorkspaceState {
     subtitlesEnabled: readBoolean(rawState.subtitlesEnabled, true),
     bgmEnabled: readBoolean(rawState.bgmEnabled, true),
     ttsProvider: isTtsProvider(importedTtsProvider) ? importedTtsProvider : DEFAULT_TTS_PROVIDER,
-    mimoVoice: isMimoVoiceId(importedMimoVoice) ? importedMimoVoice : DEFAULT_MIMO_VOICE,
+    mimoVoice: normalizeMimoVoiceId(readString(rawState.mimoVoice, DEFAULT_MIMO_VOICE)),
     mimoStyle: readString(rawState.mimoStyle, DEFAULT_MIMO_STYLE),
     ttsApiTemplate: normalizeTtsApiTemplate(readString(rawState.ttsApiTemplate, DEFAULT_TTS_API_TEMPLATE)),
     defaultPauseMs,
@@ -559,6 +568,9 @@ export default function Home() {
   const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
   const [workspaceTransferMessage, setWorkspaceTransferMessage] = useState("");
   const [workspaceTransferError, setWorkspaceTransferError] = useState(false);
+  const [previewingMimoVoice, setPreviewingMimoVoice] = useState<MimoVoiceId | null>(null);
+  const [mimoPreviewMessage, setMimoPreviewMessage] = useState("");
+  const [mimoPreviewError, setMimoPreviewError] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -567,6 +579,8 @@ export default function Home() {
   const assetsRef = useRef<RankAsset[]>([]);
   const videoUrlRef = useRef("");
   const workspaceImportInputRef = useRef<HTMLInputElement | null>(null);
+  const mimoPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const mimoPreviewUrlRef = useRef("");
 
   const assetMap = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets]);
   const rowMap = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
@@ -654,8 +668,12 @@ export default function Home() {
     }
 
     const storedMimoVoice = window.localStorage.getItem(MIMO_VOICE_STORAGE_KEY);
-    if (storedMimoVoice && isMimoVoiceId(storedMimoVoice)) {
-      setMimoVoice(storedMimoVoice);
+    if (storedMimoVoice) {
+      const normalizedMimoVoice = normalizeMimoVoiceId(storedMimoVoice);
+      setMimoVoice(normalizedMimoVoice);
+      if (normalizedMimoVoice !== storedMimoVoice) {
+        window.localStorage.setItem(MIMO_VOICE_STORAGE_KEY, normalizedMimoVoice);
+      }
     }
 
     const storedMimoStyle = window.localStorage.getItem(MIMO_STYLE_STORAGE_KEY);
@@ -677,6 +695,8 @@ export default function Home() {
     return () => {
       assetsRef.current.forEach((asset) => revokeAssetUrl(asset.url));
       if (videoUrlRef.current) URL.revokeObjectURL(videoUrlRef.current);
+      mimoPreviewAudioRef.current?.pause();
+      if (mimoPreviewUrlRef.current) URL.revokeObjectURL(mimoPreviewUrlRef.current);
     };
   }, []);
 
@@ -811,6 +831,22 @@ export default function Home() {
     imageCacheRef.current.delete(assetId);
   };
 
+  const updateAssetName = (assetId: string, value: string) => {
+    setAssets((currentAssets) =>
+      currentAssets.map((asset) => (asset.id === assetId ? { ...asset, name: value } : asset)),
+    );
+  };
+
+  const commitAssetName = (assetId: string) => {
+    setAssets((currentAssets) =>
+      currentAssets.map((asset) => {
+        if (asset.id !== assetId) return asset;
+        const name = asset.name.trim();
+        return { ...asset, name: name || "未命名素材" };
+      }),
+    );
+  };
+
   const updateRow = (rowId: string, patch: Partial<Pick<RankRow, "label" | "color">>) => {
     setRows((currentRows) => currentRows.map((row) => (row.id === rowId ? { ...row, ...patch } : row)));
   };
@@ -898,6 +934,10 @@ export default function Home() {
   const updateTtsProvider = (value: string) => {
     if (!isTtsProvider(value)) return;
 
+    if (value !== DEFAULT_TTS_PROVIDER) {
+      stopMimoVoicePreview();
+      setPreviewingMimoVoice(null);
+    }
     setTtsProvider(value);
     window.localStorage.setItem(TTS_PROVIDER_STORAGE_KEY, value);
   };
@@ -912,6 +952,80 @@ export default function Home() {
   const updateMimoStyle = (value: string) => {
     setMimoStyle(value);
     window.localStorage.setItem(MIMO_STYLE_STORAGE_KEY, value.trim() || DEFAULT_MIMO_STYLE);
+  };
+
+  const stopMimoVoicePreview = () => {
+    mimoPreviewAudioRef.current?.pause();
+    mimoPreviewAudioRef.current = null;
+
+    if (mimoPreviewUrlRef.current) {
+      URL.revokeObjectURL(mimoPreviewUrlRef.current);
+      mimoPreviewUrlRef.current = "";
+    }
+  };
+
+  const previewMimoVoice = async (voiceId: MimoVoiceId) => {
+    if (isGenerating) return;
+
+    const voiceLabel = mimoVoiceOptions.find((option) => option.id === voiceId)?.label ?? voiceId;
+    stopMimoVoicePreview();
+    setPreviewingMimoVoice(voiceId);
+    setMimoPreviewError(false);
+    setMimoPreviewMessage(`正在试听 ${voiceLabel}`);
+
+    try {
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format: "mp3",
+          provider: DEFAULT_TTS_PROVIDER,
+          style: mimoStyle.trim() || DEFAULT_MIMO_STYLE,
+          text: MIMO_VOICE_PREVIEW_TEXT,
+          voice: voiceId,
+        }),
+      });
+
+      if (!response.ok) {
+        let message = `声线试听失败：${response.status}`;
+        try {
+          const payload = (await response.json()) as { error?: string };
+          if (payload.error) message = payload.error;
+        } catch {
+          // Keep the status-based fallback when the upstream response is not JSON.
+        }
+
+        throw new Error(message);
+      }
+
+      const audioUrl = URL.createObjectURL(await response.blob());
+      const audio = new Audio(audioUrl);
+      mimoPreviewAudioRef.current = audio;
+      mimoPreviewUrlRef.current = audioUrl;
+
+      audio.onended = () => {
+        if (mimoPreviewAudioRef.current !== audio) return;
+        stopMimoVoicePreview();
+        setPreviewingMimoVoice(null);
+        setMimoPreviewError(false);
+        setMimoPreviewMessage(`已试听 ${voiceLabel}`);
+      };
+      audio.onerror = () => {
+        if (mimoPreviewAudioRef.current !== audio) return;
+        stopMimoVoicePreview();
+        setPreviewingMimoVoice(null);
+        setMimoPreviewError(true);
+        setMimoPreviewMessage("试听音频播放失败。");
+      };
+
+      await audio.play();
+      setMimoPreviewMessage(`正在播放 ${voiceLabel}`);
+    } catch (error) {
+      stopMimoVoicePreview();
+      setPreviewingMimoVoice(null);
+      setMimoPreviewError(true);
+      setMimoPreviewMessage(error instanceof Error ? error.message : "声线试听失败。");
+    }
   };
 
   const updateTtsApiTemplate = (value: string) => {
@@ -1192,6 +1306,8 @@ export default function Home() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    stopMimoVoicePreview();
+    setPreviewingMimoVoice(null);
     setIsGenerating(true);
     setErrorMessage("");
     setStatusMessage("准备素材");
@@ -1838,10 +1954,20 @@ export default function Home() {
 
                     return (
                       <article className="asset-card" key={asset.id}>
-                        <img src={asset.url} alt={asset.name} />
-                        <div className="asset-card-copy">
-                          <span>{asset.name}</span>
-                        </div>
+                        <img src={asset.url} alt={asset.name || "未命名素材"} />
+                        <label className="asset-name-field">
+                          <span>
+                            <Pencil size={13} />
+                            名称
+                          </span>
+                          <Input
+                            aria-label={`重命名 ${asset.name || "未命名素材"}`}
+                            className="asset-name-input"
+                            value={asset.name}
+                            onBlur={() => commitAssetName(asset.id)}
+                            onChange={(event) => updateAssetName(asset.id, event.target.value)}
+                          />
+                        </label>
                         <div className="asset-row-picker" aria-label="素材目标行" role="radiogroup">
                           {rows.map((row) => {
                             const isSelected = (step?.targetRowId ?? selectedRow.id) === row.id;
@@ -1937,14 +2063,37 @@ export default function Home() {
 
               {ttsProvider === DEFAULT_TTS_PROVIDER ? (
                 <>
-                  <Label htmlFor="mimo-voice">MiMo 声线</Label>
-                  <select id="mimo-voice" value={mimoVoice} onChange={(event) => updateMimoVoice(event.target.value)}>
+                  <Label>MiMo 声线</Label>
+                  <div className="voice-option-list" id="mimo-voice" role="radiogroup" aria-label="MiMo 声线">
                     {mimoVoiceOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
+                      <div className={`voice-option ${mimoVoice === option.id ? "selected" : ""}`} key={option.id}>
+                        <label className="voice-option-label">
+                          <input
+                            type="radio"
+                            checked={mimoVoice === option.id}
+                            name="mimo-voice"
+                            value={option.id}
+                            onChange={(event) => updateMimoVoice(event.target.value)}
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                        <Button
+                          type="button"
+                          size="sm"
+                          title={`试听 ${option.label}`}
+                          variant="outline"
+                          disabled={isGenerating || previewingMimoVoice !== null}
+                          onClick={() => previewMimoVoice(option.id)}
+                        >
+                          {previewingMimoVoice === option.id ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
+                          试听
+                        </Button>
+                      </div>
                     ))}
-                  </select>
+                  </div>
+                  {mimoPreviewMessage && (
+                    <p className={`field-hint ${mimoPreviewError ? "error" : ""}`}>{mimoPreviewMessage}</p>
+                  )}
 
                   <Label htmlFor="mimo-style">MiMo 语气</Label>
                   <Input
@@ -2043,9 +2192,9 @@ export default function Home() {
                       >
                         <div className="step-card-header">
                           <span className="step-index">{index + 1}</span>
-                          {asset ? <img src={asset.url} alt={asset.name} /> : <div className="asset-placeholder" />}
+                          {asset ? <img src={asset.url} alt={asset.name || "未命名素材"} /> : <div className="asset-placeholder" />}
                           <div className="step-title">
-                            <strong>{asset?.name ?? "已删除素材"}</strong>
+                            <strong>{asset ? asset.name || "未命名素材" : "已删除素材"}</strong>
                             <span>下一步：{step.nextStepId ? index + 2 : "结束"}</span>
                           </div>
                           <div className="step-actions">

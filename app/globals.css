@@ -550,14 +550,14 @@ textarea {
   object-fit: cover;
 }
 
-.asset-card-copy,
+.asset-name-field,
 .step-title {
   display: grid;
   min-width: 0;
   gap: 6px;
 }
 
-.asset-card-copy {
+.asset-name-field {
   grid-area: copy;
 }
 
@@ -565,7 +565,25 @@ textarea {
   grid-area: remove;
 }
 
-.asset-card-copy span,
+.asset-name-field > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #0057ff;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.asset-name-input {
+  height: 36px;
+  min-height: 36px;
+  border-width: 2px;
+  background: #ffffff;
+  font-weight: 800;
+}
+
 .step-title strong {
   overflow: hidden;
   font-weight: 800;
@@ -663,6 +681,49 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+}
+
+.voice-option-list {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px;
+  border: 2px solid #000000;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.voice-option.selected {
+  background: #eaf2ff;
+  box-shadow: inset 0 0 0 2px #0057ff;
+}
+
+.voice-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 40px;
+  font-weight: 900;
+}
+
+.voice-option-label input {
+  width: 18px;
+  height: 18px;
+  accent-color: #0057ff;
+}
+
+.voice-option-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toggle-row {
@@ -1036,6 +1097,7 @@ textarea {
 
   .toggle-row,
   .tts-api-row,
+  .voice-option,
   .export-section,
   .workspace-transfer-actions {
     grid-template-columns: 1fr;
@@ -1114,6 +1176,21 @@ textarea {
   .control-panel {
     gap: 20px;
     padding: 0 18px 22px;
+  }
+
+  .asset-card {
+    grid-template-columns: 56px minmax(0, 1fr) 40px;
+    gap: 8px;
+  }
+
+  .asset-card img,
+  .asset-placeholder {
+    width: 56px;
+    height: 56px;
+  }
+
+  .asset-name-input {
+    font-size: 14px;
   }
 
   .row-config {

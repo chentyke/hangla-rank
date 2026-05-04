@@ -37,6 +37,7 @@ npm run start
 MIMO_API_KEY=your_mimo_api_key
 # XIAOMI_API_KEY=your_legacy_xiaomi_api_key
 # MIMO_CHAT_COMPLETIONS_URL=https://api.xiaomimimo.com/v1/chat/completions
+# MIMO_VOICE_CLONE_REFERENCE_PATH=.voice-clone/default-reference.mp3
 # TTS_RATE_LIMIT_MAX_REQUESTS=20
 # TTS_RATE_LIMIT_WINDOW_MS=60000
 # TTS_MAX_TEXT_LENGTH=1000
@@ -59,6 +60,12 @@ ALLOW_PRIVATE_TTS_UPSTREAMS=true
 ## 说明
 
 - 生成视频依赖浏览器端媒体能力和 `@ffmpeg/ffmpeg`。
-- 语音生成默认通过 `app/api/tts/route.ts` 代理到 MiMo `mimo-v2.5-tts`，服务端需要设置 `MIMO_API_KEY`；生成面板中仍可切换到自定义兼容旧格式的 TTS API 地址模板。
+- 语音生成默认通过 `app/api/tts/route.ts` 代理到 MiMo `mimo-v2.5-tts-voiceclone`，服务端需要设置 `MIMO_API_KEY`，并在 `.voice-clone/default-reference.mp3` 放入已授权的参考音频；生成面板中仍可切换到 MiMo 内置声线或自定义兼容旧格式的 TTS API 地址模板。
 - `/api/tts` 包含基础内存限流、文本长度限制、音频大小限制和公网 URL 校验；如果部署在多实例或边缘环境，建议额外接入平台级限流。
 - `.next/`、`node_modules/`、Playwright 输出和本地生成文件不会进入 Git。
+
+## Vercel 部署
+
+- 在 Vercel 项目 Settings → Environment Variables 中添加 `MIMO_API_KEY`，按需勾选 Production、Preview、Development 环境。
+- `.voice-clone/default-reference.mp3` 会随 Git 部署，并通过 `next.config.mjs` 的 `outputFileTracingIncludes` 打包进 `/api/tts` 函数；通常不需要设置 `MIMO_VOICE_CLONE_REFERENCE_PATH`。
+- 如果后续更换参考音频，直接替换 `.voice-clone/default-reference.mp3` 后重新提交部署；如果改用其他路径，需要同步更新 `MIMO_VOICE_CLONE_REFERENCE_PATH` 和 `next.config.mjs` 的 tracing include。
